@@ -4,6 +4,7 @@ import cv2
 from Vector2D import Vector2D
 from scipy.interpolate import CubicSpline
 from numpy import deg2rad
+from send_error import send_error
 
 def make_triangle_vertices(base_center, H, angle):
 
