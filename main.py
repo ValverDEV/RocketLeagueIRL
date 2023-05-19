@@ -7,12 +7,12 @@ from numpy import deg2rad
 import serial
 
 # Serial setup to use in Arduino
-evenement=""
-print("Start")
-port="/dev/rfcomm0"
-bluetooth=serial.Serial(port, 9600) # Start communications with the bluetooth unit
-print("Connected")
-bluetooth.flushInput() #This gives the bluetooth a little kick
+# evenement=""
+# print("Start")
+# port="/dev/rfcomm0"
+# bluetooth=serial.Serial(port, 9600) # Start communications with the bluetooth unit
+# print("Connected")
+# bluetooth.flushInput() #This gives the bluetooth a little kick
 
 # Constantes 
 circle_radius = 20
@@ -229,6 +229,99 @@ def draw_trajectory(img, traj_func, from_, to_, color, thicnkess = 5):
 
     return traj_img
 
+def get_angle(point1, point2):
+    
+    """Finds the hypothenuse angle of the right angle formed by points 1 and 2
+
+    Parameters
+    ----------
+    point1: tuple, list
+        (x, y) coordinates
+    point2: tuple, list
+        (x, y) coordinates
+    
+    Returns
+    ---------
+    angle
+        in degrees
+    """
+
+    x1, y1 = point1
+    x2, y2 = point2
+    return np.rad2deg(np.arctan((y2 - y1)/(x2 - x1)))
+
+
+def find_triangle_orientation(img):
+
+    """Find the orientation of the car (triangle)
+
+    Parameters
+    ----------
+    img: numpy.array
+        image to scan
+
+    Return
+    ----------
+    direction
+        triangle direction in degrees 
+    """
+
+    # Find contours on grayscale image
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # setting threshold of gray image
+    _, threshold = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+
+    # using a findContours() function
+    contours, _ = cv2.findContours(
+        threshold, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+
+    i = 0
+    triangle_vertices = None
+
+    shapes = []
+
+    # list for storing names of shapes
+    for contour in contours:
+
+        # here we are ignoring first counter because 
+        # findcontour function detects whole image as shape
+        if i == 0:
+            i = 1
+            continue
+
+        # cv2.approxPloyDP() function to approximate the shape
+        approx = cv2.approxPolyDP(
+            contour, 0.04 * cv2.arcLength(contour, True), True)
+
+        if approx.shape[0] == 3:
+            triangle_vertices = approx.reshape(3, 2)
+
+    # Find the base of the triangle and direction to the furthest vertice
+    Lmin = np.inf
+    # 0 = 1 - 2, 1 = 2 - 3, 2 = 3, 1
+    shortest = 0
+    excluded_points = [2, 0, 1]
+    for i in range(3):
+        if i == 2:
+            i = -1
+        x1, y1 = triangle_vertices[i]
+        x2, y2 = triangle_vertices[i+1]
+        L = np.sqrt((x2-x1)**2 + (y2-y1)**2)
+        if L < Lmin:
+            Lmin = L
+            shortest = i
+            middle_point = ((x1+x2)/2, (y1+y2)/2)
+    excluded_point = excluded_points[shortest] 
+    direction_point = triangle_vertices[excluded_point]
+    angle_direction = get_angle(middle_point, direction_point)
+    return angle_direction
+
+def get_angle_error(ref_angle, img):
+    return int(ref_angle - find_triangle_orientation(img))
+
+
 def get_error(img, spline, x_range):
     
     """Calculate the vertical position (y) error from an image
@@ -347,21 +440,36 @@ def main():
     # plt.imshow(car_traj_img)
     cv2.imwrite('trajectories.png', car_traj_img)
 
+
+    ######################
+    # Correctly direct car
+    ######################
+    ref_angle = -1*get_angle(triangle_initial.coord, (triangle_initial.x + 10, spline(triangle_initial.x)))
+    orientation_error = get_angle_error(ref_angle, img)
+    while abs(orientation_error) > 5: # degrees
+        angle += orientation_error
+        img = draw_image(triangle_center, angle, circle_center)
+        orientation_error = get_angle_error(ref_angle, img)
+    
+    img = draw_image(triangle_center, angle, circle_center)
+    oriented_img = draw_trajectory(img, spline, triangle_center, ball_center, (0, 255, 0), 5)
+    cv2.imwrite('oriented.png', oriented_img)
+
+
     ######################
     # Move Triangle and Error Test
     ######################
 
-    x_range = (triangle_center_x, circle_center_x)
-    triangle_center.move(np.random.randint(50, 200), np.random.randint(-200, 200))
-    img = draw_image(triangle_center, angle, circle_center)
-    car_traj_img = draw_trajectory(img, spline, triangle_initial, ball_center, (0, 255, 0), 5)
-    cv2.imwrite('move_img.png', car_traj_img)
-    error = get_error(img, spline, x_range)
-    if error:
-        error = int(error)
-        print(error)
-        send_error(error)
-    return
+    # x_range = (triangle_center_x, circle_center_x) triangle_center.move(np.random.randint(50, 200), np.random.randint(-200, 200))
+    # img = draw_image(triangle_center, angle, circle_center)
+    # car_traj_img = draw_trajectory(img, spline, triangle_initial, ball_center, (0, 255, 0), 5)
+    # cv2.imwrite('move_img.png', car_traj_img)
+    # error = get_error(img, spline, x_range)
+    # if error:
+    #     error = int(error)
+    #     print(error)
+    #     send_error(error)
+    # return
 
 
 if __name__ == '__main__':
