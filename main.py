@@ -1,18 +1,21 @@
 import numpy as np
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 import cv2
 from Vector2D import Vector2D
 from scipy.interpolate import CubicSpline
+from scipy.signal  import medfilt
 from numpy import deg2rad
 import serial
+from time import sleep
+import sys
 
 # Serial setup to use in Arduino
-# evenement=""
-# print("Start")
-# port="/dev/rfcomm0"
-# bluetooth=serial.Serial(port, 9600) # Start communications with the bluetooth unit
-# print("Connected")
-# bluetooth.flushInput() #This gives the bluetooth a little kick
+evenement=""
+print("Start")
+port="/dev/rfcomm0"
+bluetooth=serial.Serial(port, 9600) # Start communications with the bluetooth unit
+print("Connected")
+bluetooth.flushInput() #This gives the bluetooth a little kick
 
 # Constantes 
 circle_radius = 20
@@ -20,6 +23,28 @@ H = 40
 # Defince goal center
 goal_center = Vector2D(640, 480/2)
 ball_x_offest = 10
+ks = 10
+kernel = np.ones((ks,ks), np.uint8)
+# Define camera
+cam = cv2.VideoCapture(2)
+
+# Car modes
+modes = {
+    'stop': 0,
+    'forward': 1,
+    'turn': 2
+}
+
+def take_img():
+    """Take an image from the webcam
+
+    Return
+    ---------
+    img
+        image taken from webcam
+    """
+    result, img = cam.read()
+    return img
 
 
 def make_triangle_vertices(base_center, H, angle):
@@ -108,7 +133,9 @@ def find_shapes(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
     # Setting threshold of gray image
-    _, threshold = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+    _, threshold = cv2.threshold(gray, 66, 255, cv2.THRESH_BINARY)
+    threshold = cv2.morphologyEx(threshold, cv2.MORPH_OPEN, kernel)
+    cv2.imwrite('treshold.png', threshold)
     
     # Using a findContours() function
     contours, _ = cv2.findContours(
@@ -129,30 +156,38 @@ def find_shapes(img):
     
         # cv2.approxPloyDP() function to approximate the shape
         approx = cv2.approxPolyDP(
-            contour, 0.04 * cv2.arcLength(contour, True), True)
+            contour, 0.06 * cv2.arcLength(contour, True), True)
+
+        cv2.drawContours(img, [contour], 0, (0, 0, 255), 5)
         
     
         # finding center point of shape
         M = cv2.moments(contour)
-        if M['m00'] != 0.0:
+        if M['m00'] != 0.0 and M['m00'] > 200: # Check that area is bigger than 200px
             x = int(M['m10']/M['m00'])
             y = int(M['m01']/M['m00'])
 
             shape = {'center': Vector2D(x, y)}
+
+        else:
+            shape = None
     
         # putting shape name at center of each shape
-        if len(approx) == 3:
-            shape['shape'] = 'triangle'
-        else:
-            shape['shape'] = 'circle'
+        if shape:
+            if len(approx) == 3:
+                shape['shape'] = 'triangle'
+                cv2.putText(img, 'Triangle', (x, y),
+                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            else:
+                shape['shape'] = 'circle'
+                cv2.putText(img, 'circle', (x, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
         
         shapes.append(shape)
 
-    for shape in shapes:
-        if shape['shape'] == 'triangle':
-            car_center = shape['center']
-        if shape['shape'] == 'circle':
-            ball_center = shape['center']
+
+    cv2.imwrite('contounrs.png', img)
         
     return shapes
 
@@ -271,6 +306,8 @@ def find_triangle_orientation(img):
 
     # setting threshold of gray image
     _, threshold = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+    _, threshold = cv2.threshold(gray, 66, 255, cv2.THRESH_BINARY)
+    threshold = cv2.morphologyEx(threshold, cv2.MORPH_OPEN, kernel)
 
     # using a findContours() function
     contours, _ = cv2.findContours(
@@ -294,6 +331,9 @@ def find_triangle_orientation(img):
         # cv2.approxPloyDP() function to approximate the shape
         approx = cv2.approxPolyDP(
             contour, 0.04 * cv2.arcLength(contour, True), True)
+
+        cv2.drawContours(img, [contour], 0, (0,255,0), 5)
+        cv2.imwrite('angle_img.png', img)
 
         if approx.shape[0] == 3:
             triangle_vertices = approx.reshape(3, 2)
@@ -319,6 +359,20 @@ def find_triangle_orientation(img):
     return angle_direction
 
 def get_angle_error(ref_angle, img):
+    """Get angle differnce between ref_angle and triangle orientation
+
+    Parameters
+    ----------
+    ref_angle: number
+        angle with the spline initial direction in degrees
+    img:
+        image to find triangle and get its orientation
+    
+    Return
+    ----------
+    angle_error
+        differente between ref_angle and orientation_angle
+    """
     return int(ref_angle - find_triangle_orientation(img))
 
 
@@ -351,9 +405,10 @@ def get_error(img, spline, x_range):
     car_found = False
     shapes = find_shapes(img)
     for shape in shapes:
-        if shape['shape'] == 'triangle':
-            car_center = shape['center']
-            car_found = True
+        if shape:
+            if shape['shape'] == 'triangle':
+                car_center = shape['center']
+                car_found = True
 
     if car_found:
         if car_center.x >= x_range[0]-20 and car_center.x <= x_range[1]:
@@ -366,56 +421,90 @@ def get_error(img, spline, x_range):
         print('Car not found')
         return None
 
-def send_error(error):
+def send_bt(mode, value):
 
-    """Send error value through bluetooth
+    """Send data through bluetooth
 
     Parameters
     ----------
-    error: number
-        error in car position and expected trajectory
+    m_type: string
+        send m for mode or d for data
+    value: int
+        value to send
     """
-
-    # Convert number to string and then encode to ascii
-    error_bytes = str(error).encode('ascii')
+    # Sleep must will change based on the delay on the Arduino,
+    # so the rate at which we send that and it receives match
+    sleep(0.03)
+    error_bytes = f'{modes[mode]}-{int(value)}'.encode()
     bluetooth.write(error_bytes)
+    print('data sent')
+    print(error_bytes)
     return
 
 def main():
-    
-    # Add padding to field
-    pad_field_x = 100+circle_radius
-    pad_field_y = 50+circle_radius
 
-    # Create random location for ball in the field
-    circle_center_x = np.random.randint(pad_field_x, 640 - pad_field_x)
-    circle_center_y = np.random.randint(pad_field_y, 480 - pad_field_y)
-    circle_center = Vector2D(circle_center_x, circle_center_y)
+    ## Initial Scan
+    car_ball_found = True
+    while True:
+        
+        #############################
+        # Generate image artificially
+        #############################
 
-    # Define triangle (car) orientation
-    angle = np.random.randint(-90, 90)
+        # # Add padding to field
+        # pad_field_x = 100+circle_radius
+        # pad_field_y = 50+circle_radius
 
-    # Create random location for triangle in the field
-    triangle_center_x = np.random.randint(H*2, circle_center_x - 10)
-    triangle_center_y = np.random.randint(H*2, circle_center_y - 10)
+        # # Create random location for ball in the field
+        # circle_center_x = np.random.randint(pad_field_x, 640 - pad_field_x)
+        # circle_center_y = np.random.randint(pad_field_y, 480 - pad_field_y) # circle_center = Vector2D(circle_center_x, circle_center_y)
 
-    # Turn location into Vector class
-    triangle_center = Vector2D(triangle_center_x, triangle_center_y)
-    triangle_initial = Vector2D(triangle_center_x, triangle_center_y)
+        # # Define triangle (car) orientation
+        # angle = np.random.randint(-90, 90)
 
-    img = draw_image(triangle_center, angle, circle_center)
+        # # Create random location for triangle in the field
+        # triangle_center_x = np.random.randint(H*2, circle_center_x - 10)
+        # triangle_center_y = np.random.randint(H*2, circle_center_y - 10)
 
-    # Find shapes on image
-    shapes = find_shapes(img)
+        # # Turn location into Vector class
+        # triangle_center = Vector2D(triangle_center_x, triangle_center_y)
+        # triangle_initial = Vector2D(triangle_center_x, triangle_center_y)
 
-    for shape in shapes:
-        if shape['shape'] == 'triangle':
-            car_center = shape['center']
-        if shape['shape'] == 'circle':
-            ball_center = shape['center']
+        # img = draw_image(triangle_center, angle, circle_center)
 
+        #################################
+        # End image artificial generation
+        #################################
 
+        # Take image from camera
+        img = take_img()
+        cv2.imwrite('camera.png', img)
 
+        # Find shapes on image
+        shapes = find_shapes(img)
+
+        for shape in shapes:
+            if shape:
+                if shape['shape'] == 'triangle':
+                    car_center = shape['center']
+                    triangle_center = shape['center']
+                    triangle_initial = shape['center']
+                elif shape['shape'] == 'circle':
+                    ball_center = shape['center']
+                    circle_center = shape['center']
+                    circle_initial = shape['center']
+                else:
+                    print('Ball not found')
+                    car_ball_found = False
+
+        if car_ball_found:
+            print('car and ball found')
+            break
+        
+        if input() == 'quit':
+            exit()
+
+    ## Car and ball were found, now we generate trajectory once
 
     # Get line fuction between ball and goal
     ball_goal_func = get_line_function(ball_center, goal_center)
@@ -441,36 +530,76 @@ def main():
     cv2.imwrite('trajectories.png', car_traj_img)
 
 
+
     ######################
     # Correctly direct car
     ######################
+    
+    # Calculate initial direction angle based on trajectory and initial triangle position
     ref_angle = -1*get_angle(triangle_initial.coord, (triangle_initial.x + 10, spline(triangle_initial.x)))
     orientation_error = get_angle_error(ref_angle, img)
-    while abs(orientation_error) > 5: # degrees
-        angle += orientation_error
-        img = draw_image(triangle_center, angle, circle_center)
-        orientation_error = get_angle_error(ref_angle, img)
-    
-    img = draw_image(triangle_center, angle, circle_center)
-    oriented_img = draw_trajectory(img, spline, triangle_center, ball_center, (0, 255, 0), 5)
-    cv2.imwrite('oriented.png', oriented_img)
+    # print('or_err')
+    # print(orientation_error)
+    # send_bt('turn', orientation_error)
+    # Continue adjusting until triangle is correctly oriented
+    # while abs(orientation_error) > 5: # degrees
+    #     img = take_img()
+    #     #angle += orientation_error
+    #     #img = draw_image(triangle_center, angle, circle_center)
+    #     orientation_error = get_angle_error(ref_angle, img)
+    #     print(orientation_error)
+    #     send_bt('turn', orientation_error)
+    #     # if input() == 'quit':
+    #     #     exit()
+        
+    #     # img = draw_image(triangle_center, angle, circle_center)
+    #     # oriented_img = draw_trajectory(img, spline, triangle_center, ball_center, (0, 255, 0), 5)
+    #     # cv2.imwrite('oriented.png', oriented_img)
+    # send_bt('stop', 0)
 
+    ##############################
+    # Move Car Until Hit
+    ##############################
+    x_range = (triangle_center.x - 20, circle_center.x)
 
-    ######################
-    # Move Triangle and Error Test
-    ######################
+    car_found = False
 
-    # x_range = (triangle_center_x, circle_center_x) triangle_center.move(np.random.randint(50, 200), np.random.randint(-200, 200))
-    # img = draw_image(triangle_center, angle, circle_center)
-    # car_traj_img = draw_trajectory(img, spline, triangle_initial, ball_center, (0, 255, 0), 5)
-    # cv2.imwrite('move_img.png', car_traj_img)
-    # error = get_error(img, spline, x_range)
-    # if error:
-    #     error = int(error)
-    #     print(error)
-    #     send_error(error)
-    # return
+    while True:
+        img = take_img()
+        shapes = find_shapes(img)
+        for shape in shapes:
+            if shape:
+                if shape['shape'] == 'triangle':
+                    triangle_center = shape['center']      
+                    car_found = True
+                    break
+        if car_found:
+            error = get_error(img, spline, x_range)
+            #print(error)
+            send_bt('forward', error)
+        else:
+            print('car not found')
+            pass
+        
+        
+        # x_range = (triangle_center_x, circle_center_x) triangle_center.move(np.random.randint(50, 200), np.random.randint(-200, 200))
+        # img = draw_image(triangle_center, angle, circle_center)
+        # car_traj_img = draw_trajectory(img, spline, triangle_initial, ball_center, (0, 255, 0), 5)
+        # cv2.imwrite('move_img.png', car_traj_img)
+        # error = get_error(img, spline, x_range)
+        # if error:
+        #     error = int(error)
+        #     print(error)
+        #     send_error(error)
+        # return
 
 
 if __name__ == '__main__':
     main()
+    try:
+        main()
+    except Exception as e:
+        print('something happened')
+        print(e)
+        for i in range(10): 
+            send_bt('stop', 0)

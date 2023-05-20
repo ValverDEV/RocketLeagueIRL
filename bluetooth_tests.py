@@ -18,11 +18,12 @@ def send_error(error):
     """
 
     # Convert number to string and then encode to ascii
-    error_bytes = str(error).encode('ascii')
+    error_bytes = str(error).encode()
     bluetooth.write(error_bytes)
     return
 
 while True:
     err = input()
-    err = int(err)
+    if err == 'quit':
+        break
     send_error(err)
