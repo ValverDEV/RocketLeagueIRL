@@ -18,6 +18,8 @@ bluetooth=serial.Serial(port, 9600) # Start communications with the bluetooth un
 print("Connected")
 bluetooth.flushInput() #This gives the bluetooth a little kick
 
+k = 1 # Proportional contro k
+
 # Constantes 
 circle_radius = 20
 H = 40
@@ -27,12 +29,12 @@ cam_length = 800
 # Defince goal center
 goal_center = Vector2D(cam_length, int(cam_height/2))
 # Offset to generate ball-goal line
-ball_x_offest = 30
+ball_x_offest = 15
 # Kernel for morphological transformation
 ks = 10
 kernel = np.ones((ks,ks), np.uint8)
 # Lower-bound threshould for grayscale convertion
-grey_th = 50
+grey_th = 70
 # Minimum area for shapes
 shape_min_area = 400
 # Define camera
@@ -205,7 +207,7 @@ def find_shapes(img):
         shapes.append(shape)
 
 
-    #cv2.imwrite('contounrs.png', img)
+    cv2.imwrite('contounrs.png', img)
         
     return shapes
 
@@ -460,6 +462,7 @@ def send_bt(mode, value):
     """
     # Sleep must will change based on the delay on the Arduino,
     # so the rate at which we send that and it receives match
+    value = int(value)
     sleep(0.1)
     error_bytes = f'{modes[mode]}-{int(value)}'.encode()
     bluetooth.write(error_bytes)
@@ -633,16 +636,18 @@ def main():
                     break
         if car_found:
             error = get_error(triangle_center, spline, x_range)
+            error *= k
             #print(error)
             send_bt('forward', error)
             traj_img = draw_trajectory(img, spline, triangle_initial, ball_center, (0, 255, 0), 5)
             traj_img = cv2.putText(traj_img, f'{error}', (100,100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
+            traj_img = cv2.putText(traj_img, f'car:{triangle_center}', (100,200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
+            traj_img = cv2.putText(traj_img, f'spline:{triangle_center.x}, {spline(triangle_center.x)}', (100,300), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
             cv2.imwrite(f'./traj_images/traj{i}.png', traj_img)
             i+=1
         else:
             print('car not found')
             pass
-        traj_img = draw_trajectory(img, spline, triangle_initial, ball_center, (0, 255, 0), 5)
         
         
         # x_range = (triangle_center_x, circle_center_x) triangle_center.move(np.random.randint(50, 200), np.random.randint(-200, 200))
