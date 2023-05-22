@@ -1,5 +1,4 @@
 import numpy as np
-#import matplotlib.pyplot as plt
 import cv2
 from Vector2D import Vector2D
 from scipy.interpolate import CubicSpline
@@ -7,7 +6,6 @@ from scipy.signal  import medfilt
 from numpy import deg2rad
 import serial
 from time import sleep
-import sys
 
 # Serial setup to use in Arduino
 # 800x448
@@ -18,7 +16,7 @@ bluetooth=serial.Serial(port, 9600) # Start communications with the bluetooth un
 print("Connected")
 bluetooth.flushInput() #This gives the bluetooth a little kick
 
-k = 1 # Proportional contro k
+k = 1 # Proportional control k
 
 # Constantes 
 circle_radius = 20
@@ -30,7 +28,8 @@ cam_length = 800
 goal_center = Vector2D(cam_length, int(cam_height/2))
 # Offset to generate ball-goal line
 ball_x_offest = 70
-vertical_offset = 40
+# Vertical tolerance for car-spline error
+vertical_tolerance = 40
 # Kernel for morphological transformation
 ks = 10
 kernel = np.ones((ks,ks), np.uint8)
@@ -395,6 +394,18 @@ def find_triangle_orientation(img):
     return angle_direction
 
 def spline_angle(x, spline, x_h = 1):
+    """Get angle direction on a spline at a certain point x
+    
+    Parameters
+    ----------
+    x: number
+        value to get angle off
+    spline: scipy CubicSpline function
+        spline function to evaluate
+    x_h: number, optional
+        secant line distance between point 1 and 2, defaults to 1 (pixel)
+
+    """
     return get_angle((x, spline(x)), (x_h, spline(x_h)))
 
 def get_orientation_error(ref_angle, img):
@@ -418,7 +429,22 @@ def get_orientation_error(ref_angle, img):
     if not(orientation is None):
         return int(ref_angle - find_triangle_orientation(img))
     return 0 
+
 def find_triangle_data(img):
+    """Get triangle position and orientation at the same time
+
+    Parameters
+    ----------
+    img: numpy.array
+        image to get data from
+    
+    Return
+    ---------
+    direction_point
+        location of the triangle's tip
+    angle_direction
+        direction angle in degrees
+    """
 
     # Find contours on grayscale image
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -493,7 +519,25 @@ def find_triangle_data(img):
 
 def get_angle_error(triangle_base, triangle_angle, spline, x_range):
 
-    #triangle_base, triangle_angle = find_triangle_data(img)
+    """Get angle error 
+
+    Given by the difference between the angle of the spline at a certain point
+    minus the direction angle of the triangle.
+
+    Parameters
+    ----------
+    triangle_base: tuple
+        (x, y) position of the triangle base
+    triangle_triangle_angle: number
+        direction of triangle in degrees
+    spline: scipy CubicSpline
+        function with the trajectory to follow
+    x_range:
+        (x0, xf) horizontal range where the car will move
+
+    """
+
+    # Check if the base is in the range
     if triangle_base[0] >= x_range[0] and triangle_base[0] <= x_range[1]:
         spline_orientation = spline_angle(triangle_base[0], spline)
         print(f'sp: {spline_orientation}, tf: {triangle_angle}')
@@ -525,6 +569,7 @@ def get_error(car_center, spline, x_range):
         y_trajectory - y_car
     """
     
+    # Check if car is in trajectory
     if car_center[0] >= x_range[0]-100 and car_center[0] <= x_range[1]:
         # Car was found and is still on the trajectory limits
         return spline(car_center[0]) - car_center[1]
@@ -533,6 +578,26 @@ def get_error(car_center, spline, x_range):
     return None
 
 def create_trajectory():
+    """Create car trajectory to hit the ball
+
+    This will find the car and ball, create a trajectory between them
+    and give their positional information.
+
+    Return
+    ----------
+    triangle_initial: Vector2D
+        position of the triangle at the beginning
+    ball_center: Vector2D
+        position of the ball throughout
+    spline:
+        trajectory between car and ball
+    ball_goal_function:
+        line function between boal and goal
+    x_range:
+        (x0, xf) horizontal conditions of control, after xf
+        the car will go forward to hit the ball
+
+    """
     ## Initial Scan
     car_ball_found = True
     while True:
@@ -597,18 +662,32 @@ def create_trajectory():
 
 def orient(triangle_initial, spline):
 
+    """Correctly orient the car to the spline's direction
+
+    Parameters
+    ----------
+    triangle_initial: Vector2D
+        intial position of the triangle
+    spline: scipy CubicSpline
+        trajectory function
+    """
+
     img = take_img()
+    # get spline angle as reference at that point
     ref_angle = get_angle(triangle_initial.coord, (triangle_initial.x + 30, spline(triangle_initial.x + 30)))
     orientation_error = get_orientation_error(ref_angle, img)
     print(f'ref angle: {ref_angle}')
     print('or_err')
     print(orientation_error) 
     
+    # While not correctly oriented
     while True:
         img = take_img()
         error = -1*int(get_orientation_error(ref_angle, img))
+        # exit condition: triangle direction similar to spline's direction
         if abs(error) < 5:
             break
+        # send error through bluetooth
         send_bt('turn', error)
 
     for i in range(10):
@@ -619,6 +698,15 @@ def orient(triangle_initial, spline):
     print(10*'#')
 
 def reorient():
+    """Reorient the car when vertical error to spline is too high
+
+    Return
+    ---------
+    spline:
+        new car-ball trajectory
+    x_range:
+        new x_range
+    """
     triangle_initial, ball_position, spline, line_function, x_range = create_trajectory()
     # Orient car
     orient(triangle_initial, spline)
@@ -626,18 +714,43 @@ def reorient():
 
 
 def follow_trajectory(spline, line_function, x_range, save_video = False):
+    """Function to follow a given trajectory
+
+    It will try to follow a direction given by the spline. If the
+    car gets too far horizontally from the spline, it will then create
+    a new trajectory (spline) and reorient.
+
+    Parameters
+    ----------
+    spline: scipy CubicSpline
+        trajectory
+    line_function: function
+        function describing the line between the ball and the goal
+    x_range: tuple
+        (x0, xf) range where the car will move on
+    save_video: bool, optional
+        if True, will save each photo taken while following the trajectory
+    """
+
     i = 0
     while True:
         img = take_img()
+        # Get triangle position and direction
         triangle_base,  triangle_angle = find_triangle_data(img)
+        # The loop will break when the car has gotten past the ball
         if triangle_base[0] > x_range[1]:
             print('FINISHING')
             break
+        # Get spline direction at car position
         spline_angle_val = spline_angle(triangle_base[0], spline)
+        # Get spline - car directional error
         angle_error = -get_angle_error(triangle_base, triangle_angle, spline, x_range)
+        # Multiply error by a constant
         angle_error *= k
+        # Get vertical error from spline to car y position
         vertical_error = get_error(triangle_base, spline, x_range)
-        if abs(vertical_error) > vertical_offset:
+        # If the car is too far from the spline we reorient
+        if abs(vertical_error) > vertical_tolerance:
             spline, _ = reorient()
         send_bt('forward', angle_error)
         if save_video:
@@ -651,11 +764,12 @@ def follow_trajectory(spline, line_function, x_range, save_video = False):
             cv2.imwrite(f'./traj_images/traj{i}.png', traj_img)
         i += 1
 
-    triangle_base = Vector2D(triangle_base[0], triangle_base[1])
 
-    #orient(triangle_base, line_function)
+    # Once the car has done the whole path and is near the ball
+    # we will hit it at a fast speed
     send_bt('full_fw', 0)
     sleep(1)
+    # Stop the car
     for i in range(10):
         send_bt('stop', 0)
 
@@ -698,12 +812,13 @@ def main():
     for i in range(10):
         send_bt('stop', 0)
 
+    # Follow the trajectory
     follow_trajectory(spline, line_function, x_range, True)
 
 
 
 if __name__ == '__main__':
-    main()
+    #main()
     try:
         main()
     except Exception as e:
