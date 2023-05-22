@@ -29,12 +29,13 @@ cam_length = 800
 # Defince goal center
 goal_center = Vector2D(cam_length, int(cam_height/2))
 # Offset to generate ball-goal line
-ball_x_offest = 15
+ball_x_offest = 70
+vertical_offset = 40
 # Kernel for morphological transformation
 ks = 10
 kernel = np.ones((ks,ks), np.uint8)
 # Lower-bound threshould for grayscale convertion
-grey_th = 80
+grey_th = 70
 # Minimum area for shapes
 shape_min_area = 400
 # Define camera
@@ -49,7 +50,8 @@ cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 modes = {
     'stop': 0,
     'forward': 1,
-    'turn': 2
+    'turn': 2,
+    'full_fw': 3
 }
 
 
@@ -487,12 +489,12 @@ def find_triangle_data(img):
         elif angle_direction > 0 and angle_direction < 90:
             angle_direction -= 180
     #angle_direction *= -1
-    return middle_point, angle_direction
+    return direction_point, angle_direction
 
 def get_angle_error(triangle_base, triangle_angle, spline, x_range):
 
     #triangle_base, triangle_angle = find_triangle_data(img)
-    if triangle_base[0] >= x_range[0]-100 and triangle_base[0] <= x_range[1]:
+    if triangle_base[0] >= x_range[0] and triangle_base[0] <= x_range[1]:
         spline_orientation = spline_angle(triangle_base[0], spline)
         print(f'sp: {spline_orientation}, tf: {triangle_angle}')
         return spline_orientation - triangle_angle
@@ -576,8 +578,10 @@ def create_trajectory():
     point3 = Vector2D(point3_x, point3_y)
 
     # Define spline points
-    spline_x = [car_center.x, point3.x, ball_center.x]
-    spline_y = [car_center.y, point3.y, ball_center.y]
+    # spline_x = [car_center.x, point3.x, ball_center.x]
+    # spline_y = [car_center.y, point3.y, ball_center.y]
+    spline_x = [car_center.x, point3.x, ball_center.x, goal_center.x]
+    spline_y = [car_center.y, point3.y, ball_center.y, goal_center.y]
 
     # Create spline using scipy CubicSpline
     spline = CubicSpline(spline_x, spline_y)
@@ -587,9 +591,9 @@ def create_trajectory():
     # plt.imshow(car_traj_img)
     cv2.imwrite('trajectories.png', car_traj_img)
 
-    x_range = (0, ball_center.x)
+    x_range = (0, ball_center.x - ball_x_offest)
 
-    return triangle_initial, ball_center, spline, x_range
+    return triangle_initial, ball_center, spline, ball_goal_func, x_range
 
 def orient(triangle_initial, spline):
 
@@ -615,23 +619,26 @@ def orient(triangle_initial, spline):
     print(10*'#')
 
 def reorient():
-    triangle_initial, ball_position, spline, x_range = create_trajectory()
+    triangle_initial, ball_position, spline, line_function, x_range = create_trajectory()
     # Orient car
     orient(triangle_initial, spline)
     return spline, x_range
 
 
-def follow_trajectory(spline, x_range, save_video = False):
+def follow_trajectory(spline, line_function, x_range, save_video = False):
     i = 0
     while True:
         img = take_img()
         triangle_base,  triangle_angle = find_triangle_data(img)
+        if triangle_base[0] > x_range[1]:
+            print('FINISHING')
+            break
         spline_angle_val = spline_angle(triangle_base[0], spline)
         angle_error = -get_angle_error(triangle_base, triangle_angle, spline, x_range)
         angle_error *= k
         vertical_error = get_error(triangle_base, spline, x_range)
-        if abs(vertical_error) > 100:
-            spline, x_range = reorient()
+        if abs(vertical_error) > vertical_offset:
+            spline, _ = reorient()
         send_bt('forward', angle_error)
         if save_video:
             print(i)
@@ -643,6 +650,14 @@ def follow_trajectory(spline, x_range, save_video = False):
             traj_img = cv2.putText(traj_img, f'bt_sent: {angle_error}', (100,250), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
             cv2.imwrite(f'./traj_images/traj{i}.png', traj_img)
         i += 1
+
+    triangle_base = Vector2D(triangle_base[0], triangle_base[1])
+
+    #orient(triangle_base, line_function)
+    send_bt('full_fw', 0)
+    sleep(1)
+    for i in range(10):
+        send_bt('stop', 0)
 
 def send_bt(mode, value):
 
@@ -667,8 +682,11 @@ def send_bt(mode, value):
 
 def main():
 
+    initial_img = take_img()
+    cv2.imwrite('initial.png', initial_img)
+
     # Create intial trajectory
-    triangle_initial, ball_position, spline, x_range = create_trajectory()
+    triangle_initial, ball_position, spline, line_function, x_range = create_trajectory()
 
     # Orient car
     orient(triangle_initial, spline)
@@ -680,7 +698,7 @@ def main():
     for i in range(10):
         send_bt('stop', 0)
 
-    follow_trajectory(spline, x_range, True)
+    follow_trajectory(spline, line_function, x_range, True)
 
 
 
