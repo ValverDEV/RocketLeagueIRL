@@ -16,11 +16,11 @@ bluetooth=serial.Serial(port, 9600) # Start communications with the bluetooth un
 print("Connected")
 bluetooth.flushInput() #This gives the bluetooth a little kick
 
-k = 1 # Proportional control k
+k = 0.5 # Proportional control k
 
 # Constantes 
 circle_radius = 20
-H = 40
+H = 60
 # Camera pixels dimentions
 cam_height = 488
 cam_length = 800
@@ -34,7 +34,7 @@ vertical_tolerance = 40
 ks = 10
 kernel = np.ones((ks,ks), np.uint8)
 # Lower-bound threshould for grayscale convertion
-grey_th = 70
+grey_th = 60
 # Minimum area for shapes
 shape_min_area = 400
 # Define camera
@@ -155,7 +155,7 @@ def find_shapes(img):
     
     # Setting threshold of gray image
     _, threshold = cv2.threshold(gray, grey_th, 255, cv2.THRESH_BINARY)
-    threshold = cv2.morphologyEx(threshold, cv2.MORPH_OPEN, kernel)
+    #threshold = cv2.morphologyEx(threshold, cv2.MORPH_OPEN, kernel)
     cv2.imwrite('treshold.png', threshold)
     
     # Using a findContours() function
@@ -329,6 +329,8 @@ def find_triangle_orientation(img):
     _, threshold = cv2.threshold(gray, grey_th, 255, cv2.THRESH_BINARY)
     threshold = cv2.morphologyEx(threshold, cv2.MORPH_OPEN, kernel)
 
+    cv2.imwrite('th.png', threshold)
+
     # using a findContours() function
     contours, _ = cv2.findContours(
         threshold, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
@@ -362,7 +364,7 @@ def find_triangle_orientation(img):
 
     if triangle_vertices is None:
         print('triangle not found')
-        return None
+        return None, None
 
 
     # Find the base of the triangle and direction to the furthest vertice
@@ -425,9 +427,10 @@ def get_orientation_error(ref_angle, img):
     """
 
     orientation = find_triangle_orientation(img)
+    triangle_orientation = find_triangle_orientation(img)
     print('orientation: ', orientation)
-    if not(orientation is None):
-        return int(ref_angle - find_triangle_orientation(img))
+    if not(orientation is None) and not(triangle_orientation is None):
+        return int(ref_angle - triangle_orientation)
     return 0 
 
 def find_triangle_data(img):
@@ -452,6 +455,8 @@ def find_triangle_data(img):
     # setting threshold of gray image
     _, threshold = cv2.threshold(gray, grey_th, 255, cv2.THRESH_BINARY)
     threshold = cv2.morphologyEx(threshold, cv2.MORPH_OPEN, kernel)
+
+    cv2.imwrite('th.png', threshold)
 
     # using a findContours() function
     contours, _ = cv2.findContours(
@@ -486,7 +491,7 @@ def find_triangle_data(img):
 
     if triangle_vertices is None:
         print('triangle not found')
-        return None
+        return None, None
 
 
     # Find the base of the triangle and direction to the furthest vertice
@@ -737,32 +742,35 @@ def follow_trajectory(spline, line_function, x_range, save_video = False):
         img = take_img()
         # Get triangle position and direction
         triangle_base,  triangle_angle = find_triangle_data(img)
-        # The loop will break when the car has gotten past the ball
-        if triangle_base[0] > x_range[1]:
-            print('FINISHING')
-            break
-        # Get spline direction at car position
-        spline_angle_val = spline_angle(triangle_base[0], spline)
-        # Get spline - car directional error
-        angle_error = -get_angle_error(triangle_base, triangle_angle, spline, x_range)
-        # Multiply error by a constant
-        angle_error *= k
-        # Get vertical error from spline to car y position
-        vertical_error = get_error(triangle_base, spline, x_range)
-        # If the car is too far from the spline we reorient
-        if abs(vertical_error) > vertical_tolerance:
-            spline, _ = reorient()
-        send_bt('forward', angle_error)
-        if save_video:
-            print(i)
-            traj_img = draw_trajectory(img, spline, Vector2D(triangle_base[0], triangle_base[1]), Vector2D(x_range[1], 0), (0, 255, 0), 5)
-            traj_img = cv2.putText(traj_img, f'ang:{round(triangle_angle)}, ref:{round(spline_angle_val)}, err:{round(angle_error)}', (100,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
-            traj_img = cv2.putText(traj_img, f'vertical_error: {round(vertical_error)}', (100,100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
-            traj_img = cv2.putText(traj_img, f'car:{triangle_base}', (100,150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
-            traj_img = cv2.putText(traj_img, f'spline:{triangle_base[0]}, {spline(triangle_base[0])}', (100,200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
-            traj_img = cv2.putText(traj_img, f'bt_sent: {angle_error}', (100,250), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
-            cv2.imwrite(f'./traj_images/traj{i}.png', traj_img)
-        i += 1
+        if not (triangle_base is None):
+            # The loop will break when the car has gotten past the ball
+            if triangle_base[0] > x_range[1]:
+                print('FINISHING')
+                break
+            # Get spline direction at car position
+            spline_angle_val = spline_angle(triangle_base[0], spline)
+            # Get spline - car directional error
+            angle_error = -get_angle_error(triangle_base, triangle_angle, spline, x_range)
+            # Multiply error by a constant
+            angle_error *= k
+            # Get vertical error from spline to car y position
+            vertical_error = get_error(triangle_base, spline, x_range)
+            # If the car is too far from the spline we reorient
+            if abs(vertical_error) > vertical_tolerance:
+                spline, _ = reorient()
+            send_bt('forward', angle_error)
+            if save_video:
+                print(i)
+                traj_img = draw_trajectory(img, spline, Vector2D(triangle_base[0], triangle_base[1]), Vector2D(x_range[1], 0), (0, 255, 0), 5)
+                traj_img = cv2.putText(traj_img, f'ang:{round(triangle_angle)}, ref:{round(spline_angle_val)}, err:{round(angle_error)}', (100,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
+                traj_img = cv2.putText(traj_img, f'vertical_error: {round(vertical_error)}', (100,100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
+                traj_img = cv2.putText(traj_img, f'car:{triangle_base}', (100,150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
+                traj_img = cv2.putText(traj_img, f'spline:{triangle_base[0]}, {spline(triangle_base[0])}', (100,200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
+                traj_img = cv2.putText(traj_img, f'bt_sent: {angle_error}', (100,250), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
+                cv2.imwrite(f'./traj_images/traj{i}.png', traj_img)
+            i += 1
+        else:
+            send_bt('forward', 0)
 
 
     # Once the car has done the whole path and is near the ball
@@ -818,7 +826,7 @@ def main():
 
 
 if __name__ == '__main__':
-    #main()
+    main()
     try:
         main()
     except Exception as e:
