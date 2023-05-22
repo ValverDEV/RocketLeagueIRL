@@ -34,7 +34,7 @@ ball_x_offest = 15
 ks = 10
 kernel = np.ones((ks,ks), np.uint8)
 # Lower-bound threshould for grayscale convertion
-grey_th = 70
+grey_th = 80
 # Minimum area for shapes
 shape_min_area = 400
 # Define camera
@@ -392,7 +392,10 @@ def find_triangle_orientation(img):
     #angle_direction *= -1
     return angle_direction
 
-def get_angle_error(ref_angle, img):
+def spline_angle(x, spline, x_h = 1):
+    return get_angle((x, spline(x)), (x_h, spline(x_h)))
+
+def get_orientation_error(ref_angle, img):
     """Get angle differnce between ref_angle and triangle orientation
 
     Parameters
@@ -413,7 +416,86 @@ def get_angle_error(ref_angle, img):
     if not(orientation is None):
         return int(ref_angle - find_triangle_orientation(img))
     return 0 
+def find_triangle_data(img):
 
+    # Find contours on grayscale image
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # setting threshold of gray image
+    _, threshold = cv2.threshold(gray, grey_th, 255, cv2.THRESH_BINARY)
+    threshold = cv2.morphologyEx(threshold, cv2.MORPH_OPEN, kernel)
+
+    # using a findContours() function
+    contours, _ = cv2.findContours(
+        threshold, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+
+    i = 0
+    triangle_vertices = None
+
+
+    # list for storing names of shapes
+    for contour in contours:
+
+        # here we are ignoring first counter because 
+        # findcontour function detects whole image as shape
+        if i == 0:
+            i = 1
+            continue
+
+        # cv2.approxPloyDP() function to approximate the shape
+        approx = cv2.approxPolyDP(
+            contour, 0.06 * cv2.arcLength(contour, True), True)
+
+        cv2.drawContours(img, [contour], 0, (0,255,0), 5)
+        #cv2.imwrite('angle_img.png', img)
+
+        M = cv2.moments(contour)
+        if M['m00'] != 0.0 and M['m00'] > shape_min_area:
+
+            if approx.shape[0] == 3:
+                triangle_vertices = approx.reshape(3, 2)
+
+    if triangle_vertices is None:
+        print('triangle not found')
+        return None
+
+
+    # Find the base of the triangle and direction to the furthest vertice
+    Lmin = np.inf
+    # 0 = 1 - 2, 1 = 2 - 3, 2 = 3, 1
+    shortest = 0
+    excluded_points = [2, 0, 1]
+    for i in range(3):
+        if i == 2:
+            i = -1
+        x1, y1 = triangle_vertices[i]
+        x2, y2 = triangle_vertices[i+1]
+        L = np.sqrt((x2-x1)**2 + (y2-y1)**2)
+        if L < Lmin:
+            Lmin = L
+            shortest = i
+            middle_point = ((x1+x2)/2, (y1+y2)/2)
+    excluded_point = excluded_points[shortest] 
+    direction_point = triangle_vertices[excluded_point]
+    angle_direction = get_angle(middle_point, direction_point)
+    # Angle correction when triangle is facing backwards
+    if direction_point[0] < middle_point[0]:
+        if angle_direction <= 0:
+            if angle_direction > -90:
+                angle_direction += 180 
+        elif angle_direction > 0 and angle_direction < 90:
+            angle_direction -= 180
+    #angle_direction *= -1
+    return middle_point, angle_direction
+
+def get_angle_error(triangle_base, triangle_angle, spline, x_range):
+
+    #triangle_base, triangle_angle = find_triangle_data(img)
+    if triangle_base[0] >= x_range[0]-100 and triangle_base[0] <= x_range[1]:
+        spline_orientation = spline_angle(triangle_base[0], spline)
+        print(f'sp: {spline_orientation}, tf: {triangle_angle}')
+        return spline_orientation - triangle_angle
 
 def get_error(car_center, spline, x_range):
     
@@ -441,71 +523,17 @@ def get_error(car_center, spline, x_range):
         y_trajectory - y_car
     """
     
-    if car_center.x >= x_range[0]-100 and car_center.x <= x_range[1]:
+    if car_center[0] >= x_range[0]-100 and car_center[0] <= x_range[1]:
         # Car was found and is still on the trajectory limits
-        return spline(car_center.x) - car_center.y
+        return spline(car_center[0]) - car_center[1]
     
     print('Car out of trajectory')
     return None
 
-
-def send_bt(mode, value):
-
-    """Send data through bluetooth
-
-    Parameters
-    ----------
-    m_type: string
-        send m for mode or d for data
-    value: int
-        value to send
-    """
-    # Sleep must will change based on the delay on the Arduino,
-    # so the rate at which we send that and it receives match
-    value = int(value)
-    sleep(0.1)
-    error_bytes = f'{modes[mode]}-{int(value)}'.encode()
-    bluetooth.write(error_bytes)
-    print('data sent')
-    print(error_bytes)
-    return
-
-def main():
-
+def create_trajectory():
     ## Initial Scan
     car_ball_found = True
     while True:
-        
-        #############################
-        # Generate image artificially
-        #############################
-
-        # # Add padding to field
-        # pad_field_x = 100+circle_radius
-        # pad_field_y = 50+circle_radius
-
-        # # Create random location for ball in the field
-        # circle_center_x = np.random.randint(pad_field_x, 640 - pad_field_x)
-        # circle_center_y = np.random.randint(pad_field_y, 480 - pad_field_y) # circle_center = Vector2D(circle_center_x, circle_center_y)
-
-        # # Define triangle (car) orientation
-        # angle = np.random.randint(-90, 90)
-
-        # # Create random location for triangle in the field
-        # triangle_center_x = np.random.randint(H*2, circle_center_x - 10)
-        # triangle_center_y = np.random.randint(H*2, circle_center_y - 10)
-
-        # # Turn location into Vector class
-        # triangle_center = Vector2D(triangle_center_x, triangle_center_y)
-        # triangle_initial = Vector2D(triangle_center_x, triangle_center_y)
-
-        # img = draw_image(triangle_center, angle, circle_center)
-
-        #################################
-        # End image artificial generation
-        #################################
-
-        # Take image from camera
         img = take_img()
         cv2.imwrite('camera.png', img)
 
@@ -559,39 +587,24 @@ def main():
     # plt.imshow(car_traj_img)
     cv2.imwrite('trajectories.png', car_traj_img)
 
+    x_range = (0, ball_center.x)
 
+    return triangle_initial, ball_center, spline, x_range
 
-    ######################
-    # Correctly direct car
-    ######################
-    
-    # Calculate initial direction angle based on trajectory and initial triangle position
+def orient(triangle_initial, spline):
+
+    img = take_img()
     ref_angle = get_angle(triangle_initial.coord, (triangle_initial.x + 30, spline(triangle_initial.x + 30)))
-    orientation_error = get_angle_error(ref_angle, img)
+    orientation_error = get_orientation_error(ref_angle, img)
     print(f'ref angle: {ref_angle}')
     print('or_err')
-    print(orientation_error)
-    #send_bt('turn', orientation_error)
-    # Continue adjusting until triangle is correctly oriented
-    # while abs(orientation_error) > 20: # degrees
-    # #while True: # degrees
-    #     send_bt('turn', -1*orientation_error)
-    #     img = take_img()
-    #     #angle += orientation_error
-    #     #img = raw_image(triangle_center, angle, circle_center)
-    #     orientation_error = get_angle_error(ref_angle, img)
-    #     print(f'ref:{ref_angle}')
-    #     print(f'or:{orientation_error}')
-    #     # if input() == 'quit':
-    #     #     exit()
-
+    print(orientation_error) 
+    
     while True:
         img = take_img()
-        error = -1*int(get_angle_error(ref_angle, img))
+        error = -1*int(get_orientation_error(ref_angle, img))
         if abs(error) < 5:
             break
-
-
         send_bt('turn', error)
 
     for i in range(10):
@@ -601,69 +614,78 @@ def main():
     print('CORRECTLY ORIENTED')
     print(10*'#')
 
+def reorient():
+    triangle_initial, ball_position, spline, x_range = create_trajectory()
+    # Orient car
+    orient(triangle_initial, spline)
+    return spline, x_range
+
+
+def follow_trajectory(spline, x_range, save_video = False):
+    i = 0
+    while True:
+        img = take_img()
+        triangle_base,  triangle_angle = find_triangle_data(img)
+        spline_angle_val = spline_angle(triangle_base[0], spline)
+        angle_error = -get_angle_error(triangle_base, triangle_angle, spline, x_range)
+        angle_error *= k
+        vertical_error = get_error(triangle_base, spline, x_range)
+        if abs(vertical_error) > 100:
+            spline, x_range = reorient()
+        send_bt('forward', angle_error)
+        if save_video:
+            print(i)
+            traj_img = draw_trajectory(img, spline, Vector2D(triangle_base[0], triangle_base[1]), Vector2D(x_range[1], 0), (0, 255, 0), 5)
+            traj_img = cv2.putText(traj_img, f'ang:{round(triangle_angle)}, ref:{round(spline_angle_val)}, err:{round(angle_error)}', (100,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
+            traj_img = cv2.putText(traj_img, f'vertical_error: {round(vertical_error)}', (100,100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
+            traj_img = cv2.putText(traj_img, f'car:{triangle_base}', (100,150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
+            traj_img = cv2.putText(traj_img, f'spline:{triangle_base[0]}, {spline(triangle_base[0])}', (100,200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
+            traj_img = cv2.putText(traj_img, f'bt_sent: {angle_error}', (100,250), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
+            cv2.imwrite(f'./traj_images/traj{i}.png', traj_img)
+        i += 1
+
+def send_bt(mode, value):
+
+    """Send data through bluetooth
+
+    Parameters
+    ----------
+    m_type: string
+        send m for mode or d for data
+    value: int
+        value to send
+    """
+    # Sleep must will change based on the delay on the Arduino,
+    # so the rate at which we send that and it receives match
+    value = int(value)
     sleep(0.1)
+    error_bytes = f'{modes[mode]}-{int(value)}'.encode()
+    bluetooth.write(error_bytes)
+    print('data sent')
+    print(error_bytes)
+    return
 
-    img = take_img()
-    orientation_error = get_angle_error(ref_angle, img)
-    print('error final')
-    print(orientation_error)
+def main():
+
+    # Create intial trajectory
+    triangle_initial, ball_position, spline, x_range = create_trajectory()
+
+    # Orient car
+    orient(triangle_initial, spline)
     
-
-    car_traj_img = draw_trajectory(img, spline, car_center, ball_center, (0, 255, 0), 5)
+    # Show image of trajectory
+    img = take_img()
+    car_traj_img = draw_trajectory(img, spline, triangle_initial, ball_position, (0, 255, 0), 5)
     cv2.imwrite('oriented.png', car_traj_img)
     for i in range(10):
         send_bt('stop', 0)
-        
 
-    ##############################
-    # Move Car Until Hit
-    ##############################
-    #x_range = (triangle_center.x, circle_center.x)
-    x_range = (0, circle_center.x)
+    follow_trajectory(spline, x_range, True)
 
-    car_found = False
-
-    i = 0
-
-    while True:
-        img = take_img()
-        shapes = find_shapes(img)
-        for shape in shapes:
-            if shape:
-                if shape['shape'] == 'triangle':
-                    triangle_center = shape['center']      
-                    car_found = True
-                    break
-        if car_found:
-            error = get_error(triangle_center, spline, x_range)
-            error *= k
-            #print(error)
-            send_bt('forward', error)
-            traj_img = draw_trajectory(img, spline, triangle_initial, ball_center, (0, 255, 0), 5)
-            traj_img = cv2.putText(traj_img, f'{error}', (100,100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
-            traj_img = cv2.putText(traj_img, f'car:{triangle_center}', (100,200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
-            traj_img = cv2.putText(traj_img, f'spline:{triangle_center.x}, {spline(triangle_center.x)}', (100,300), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0,0 ), 2, cv2.LINE_AA)
-            cv2.imwrite(f'./traj_images/traj{i}.png', traj_img)
-            i+=1
-        else:
-            print('car not found')
-            pass
-        
-        
-        # x_range = (triangle_center_x, circle_center_x) triangle_center.move(np.random.randint(50, 200), np.random.randint(-200, 200))
-        # img = draw_image(triangle_center, angle, circle_center)
-        # car_traj_img = draw_trajectory(img, spline, triangle_initial, ball_center, (0, 255, 0), 5)
-        # cv2.imwrite('move_img.png', car_traj_img)
-        # error = get_error(img, spline, x_range)
-        # if error:
-        #     error = int(error)
-        #     print(error)
-        #     send_error(error)
-        # return
 
 
 if __name__ == '__main__':
-    #main()
+    main()
     try:
         main()
     except Exception as e:
