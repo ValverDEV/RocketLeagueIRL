@@ -16,7 +16,7 @@ bluetooth=serial.Serial(port, 9600) # Start communications with the bluetooth un
 print("Connected")
 bluetooth.flushInput() #This gives the bluetooth a little kick
 
-k = 0.5 # Proportional control k
+k = 0.3 # Proportional control k
 
 # Constantes 
 circle_radius = 20
@@ -27,9 +27,9 @@ cam_length = 800
 # Defince goal center
 goal_center = Vector2D(cam_length, int(cam_height/2))
 # Offset to generate ball-goal line
-ball_x_offest = 70
+ball_x_offest = 60
 # Vertical tolerance for car-spline error
-vertical_tolerance = 40
+vertical_tolerance = 30
 # Kernel for morphological transformation
 ks = 10
 kernel = np.ones((ks,ks), np.uint8)
@@ -775,7 +775,8 @@ def follow_trajectory(spline, line_function, x_range, save_video = False):
 
     # Once the car has done the whole path and is near the ball
     # we will hit it at a fast speed
-    send_bt('full_fw', 0)
+    for i in range(5):
+        send_bt('full_fw', 0)
     sleep(1)
     # Stop the car
     for i in range(10):
@@ -826,7 +827,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    #main()
     try:
         main()
     except Exception as e:
